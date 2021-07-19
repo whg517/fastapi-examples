@@ -1,0 +1,4 @@
+
+
+#DATABASE: 'mysql+aiomysql://root:000000@127.0.0.1:3306/fastapi_sqlalchemy?charset=utf8'
+DATABASE: 'mysql+aiomysql://root:root@127.0.0.1:3306/fastapi_sqlalchemy?charset=utf8'

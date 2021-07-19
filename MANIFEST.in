@@ -1,0 +1,9 @@
+include MANIFEST.in
+include LICENSE
+include *.md
+graft docs
+graft tests
+graft src/fastapi_with_sqlalchemy/alembic
+global-exclude __pycache__
+global-exclude *.py[co]
+global-exclude *.local.yml

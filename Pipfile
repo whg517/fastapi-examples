@@ -1,0 +1,29 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+fastapi = "*"
+sqlalchemy = "*"
+alembic = "*"
+aiomysql = "*"
+pymysql = "*"
+uvicorn = "*"
+pytest-mock = "*"
+dynaconf = "*"
+
+[dev-packages]
+pytest = "*"
+pytest-asyncio = "*"
+pytest-sqlalchemy = "*"
+pytest-alembic = "*"
+pylint-pytest = "*"
+pytest-cov = "*"
+pytest-mock = "*"
+mypy = "*"
+isort = "*"
+requests = "*"
+
+[requires]
+python_version = "3.9"

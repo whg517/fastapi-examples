@@ -1,13 +1,16 @@
 import functools
+from asyncio import current_task
 from collections import Awaitable, Callable
 from inspect import signature
 from typing import Optional, TypeVar, Any
 
 from dynaconf import Dynaconf
 from fastapi_with_sqlalchemy.utils import SingletonMeta
+from sqlalchemy import event
+from sqlalchemy.engine import Engine, Connection
 from sqlalchemy.ext.asyncio import (AsyncEngine, AsyncSession,
-                                    create_async_engine)
-from sqlalchemy.orm import scoped_session, sessionmaker
+                                    create_async_engine, async_scoped_session, AsyncSessionTransaction)
+from sqlalchemy.orm import sessionmaker
 
 from fastapi_with_sqlalchemy.utils.exceptions import FastAPIWithSqlalchemyError
 
@@ -41,12 +44,9 @@ class Database(metaclass=SingletonMeta):
     def session(self) -> sessionmaker:
         return sessionmaker(self.engine, expire_on_commit=False, class_=AsyncSession)
 
-    def foo(self):
-        """"""
-
     @property
-    def scoped_session(self) -> scoped_session:
-        return scoped_session(self.session)
+    def scoped_session(self) -> async_scoped_session:
+        return async_scoped_session(self.session, scopefunc=current_task)
 
     async def close(self) -> None:
         await self.engine.dispose()
@@ -78,23 +78,55 @@ def find_session_idx(func: Callable[..., Awaitable[RT]]) -> int:
 
 
 class SessionProvider:
-    """"""
+    """
+    参考 sqlalchemy.ext.async.session._AsyncSessionContextManager 实现
+    可以控制事务的 SessionProvider.
+    """
 
-    def __init__(self, auto_commit: Optional[bool] = False):
+    def __init__(self, auto_commit: Optional[bool] = False, nested: Optional[bool] = False):
+        """
+        SessionProvider
+        :param auto_commit: 是否启用事务，自动提交
+        :param nested:  是否启用子事务
+        """
         self._auto_commit = auto_commit
+        self._nested = nested
+        self._session: Optional[AsyncSession] = None
+        self._tarns: Optional[AsyncSessionTransaction] = None
+
+    def _create_cm(self):
+        """Return context manager"""
+        return self
 
     async def __aenter__(self) -> AsyncSession:
-        async with Database().scoped_session() as session:
-            self._session = session
-            # 如果手动弃用自动提交，同时 session 没有开启事务
-            if self._auto_commit and not session.in_transaction():
-                async with session.begin():
-                    return session
-            else:
-                return session
+        """
+        参考 _AsyncSessionContextManager.__enter__
+        :return:
+        """
+        self._session: AsyncSession = Database().scoped_session()
+        if self._auto_commit or self._nested:
+            # 这里正常情况下应该是 async_session.begin()
+            # AsyncSession 实现了 begin 和 nested_begin 方法。
+            # 其方法内部的区别是创建了 nested 是否为 True 的
+            # AsyncSessionTransaction 对象。
+            # 所以在这里就直接手动创建了，而非不是调用 AsyncSession
+            # 的方法创建。
+            self._trans = AsyncSessionTransaction(self._session, nested=self._nested)
+            await self._trans.__aenter__()
+
+        return self._session
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """"""
+        """
+        参考 参考 _AsyncSessionContextManager.__aexit__
+        :param exc_type:
+        :param exc_val:
+        :param exc_tb:
+        :return:
+        """
+        if self._auto_commit:
+            await self._trans.__aexit__(exc_type, exc_val, exc_tb)
+        await self._session.__aexit__(exc_type, exc_val, exc_tb)
 
     def __call__(self, func: Callable[..., Awaitable[RT]]) -> Callable[..., Awaitable[RT]]:
         @functools.wraps(func)
@@ -104,7 +136,7 @@ class SessionProvider:
             if "session" in kwargs or session_args_idx < len(args):
                 result = await func(*args, **kwargs)
             else:
-                async with self as session:
+                async with self._create_cm() as session:
                     result = await func(*args, session=session, **kwargs)
             return result
 
@@ -113,28 +145,59 @@ class SessionProvider:
 
 def session_provider(
         func: Optional[Callable[..., Awaitable[RT]]] = None,
-        auto_commit: Optional[bool] = False
+        auto_commit: Optional[bool] = False,
+        nested: Optional[bool] = False
 ) -> RT:
     """
-    Usage:
+      使用方法:
         >>>
             @session_provider()
             async def func(session: AsyncSession):
+                # 只使用 session 对象
                 result = await session.scalar(text('SELECT * from user'))
+        >>>
+            @session_provider()
+            async def func(session: AsyncSession):
+                # 使用 session 对象，并自行管理事务
+                async with session.begin():
+                    await session.scalar(text('SELECT * from user'))
         >>>
             @session_provider(auto_commit=True)
             async def func(session: AsyncSession):
+                # 使用 session 对象，并开启自动提交
+                result = await session.scalar(text('INSERT INTO user (name, age) VALUES ("foo", 123)'))
+        >>>
+            @session_provider(netsted=True)
+            async def func(session: AsyncSession):
+                # 使用 session 对象，并自动开启子事务
                 result = await session.scalar(text('INSERT INTO user (name, age) VALUES ("foo", 123)'))
         >>>
             async def func(session: AsyncSession):
                 result = await session.scalar(text('SELECT * from user'))
+            # 方法形式调用
             result = await session_provider(func, auto_commit=True)
 
     :param func:
     :param auto_commit:
+    :param nested:
     :return:
     """
     if callable(func):
-        return SessionProvider(auto_commit)(func)
+        return SessionProvider(auto_commit, nested)(func)
     else:
         return SessionProvider(auto_commit)
+
+
+@event.listens_for(Engine, "connect")
+def set_sqlite_pragma(dbapi_connection, _connection_record):
+    """
+    sqlite 连接适配操作，使其支持外键。
+    :param dbapi_connection:
+    :param _connection_record:
+    :return:
+    """
+
+    if isinstance(dbapi_connection, Connection):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()

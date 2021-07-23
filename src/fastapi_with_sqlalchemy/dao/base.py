@@ -1,6 +1,7 @@
 from typing import Generic, Type, Union, Optional
 
-from sqlalchemy import select, func
+from fastapi_with_sqlalchemy.utils.exceptions import ObjectNotFound
+from sqlalchemy import select, func, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_with_sqlalchemy.db.models import User, Address
@@ -25,6 +26,7 @@ class DAO(Generic[ModelType]):
 
     @property
     def session(self) -> AsyncSession:
+        """Async session"""
         return self._session
 
     async def count(self) -> int:
@@ -33,11 +35,16 @@ class DAO(Generic[ModelType]):
         return await self.session.scalar(stmt)
 
     async def get_by_id(self, pk: int) -> ModelType:
-        """Get model by id"""
-        return await self.session.get(self.model, pk)
-
-    def _select_stmt(self) -> Select:
-        return select(self.model)
+        """
+        Get model by id
+        :param pk:
+        :return: ModelType
+        :raise ObjectNotFound
+        """
+        obj = await self.session.get(self.model, pk)
+        if not obj:
+            raise ObjectNotFound()
+        return obj
 
     async def get(
             self,
@@ -47,6 +54,7 @@ class DAO(Generic[ModelType]):
             offset: int = 0,
     ):
         """
+        Get objects by conditions
         :return:
         """
         stmt = select(self.model)
@@ -59,6 +67,7 @@ class DAO(Generic[ModelType]):
         return result.scalars().all()
 
     def _sort(self, stmt: Select, sorting_fields: Union[tuple[str], list[str]]) -> Select:
+        """Sort objects"""
         order_by_fields = []
         for field in sorting_fields:
             if field.startswith('-'):
@@ -71,15 +80,29 @@ class DAO(Generic[ModelType]):
         return stmt.order_by(*order_by_fields)
 
     def _search(self, stmt: Select, search_fields: dict[str, str]) -> Select:
-        filter_by_condition = {}
-        for key, value in search_fields.items():
-            table_field = getattr(self.model, key)
-            filter_by_condition.setdefault(table_field, value)
-        return stmt.filter_by(**filter_by_condition)
+        """Search objects by some fields"""
+        return stmt.filter_by(**search_fields)
 
     def _paginate_by_limit_offset(self, stmt: Select, limit: int, offset: int) -> Select:
         """Page"""
         return stmt.limit(limit).offset(offset)
+
+    async def create(self, **kwargs) -> ModelType:
+        """Create a model object"""
+        model = self.model(**kwargs)
+        self.session.add_all(model)
+        return model
+
+    async def update(self, pk: int, **kwargs) -> ModelType:
+        obj = await self.get_by_id(pk)
+        stmt = update(self.model).where(self.model.id == obj.id).values(**kwargs)
+        obj = await self.session.scalar(stmt)
+        return obj
+
+    async def delete(self, pk: int) -> None:
+        obj = await self.get_by_id(pk)
+        stmt = delete(self.model).where(self.model.id == obj.id)
+        await self.session.scalar(stmt)
 
 
 class UserDAO(DAO[User]):

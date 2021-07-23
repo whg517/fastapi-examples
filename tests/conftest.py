@@ -1,12 +1,15 @@
 """Conf test"""
+import functools
 import os
-from collections import AsyncGenerator, Generator
+from collections import AsyncGenerator, Generator, Callable
 from datetime import datetime
+from typing import Optional
 
 import pytest
 from alembic.command import downgrade as alembic_downgrade
 from alembic.command import upgrade as alembic_upgrade
 from alembic.config import Config as AlembicConfig
+from requests import Response
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, AsyncEngine
@@ -61,7 +64,7 @@ async def session_factory(settings):
 
 
 @pytest.fixture()
-async def session(migrate, session_factory) -> AsyncGenerator[Session, None]:
+async def session(migrate, session_factory) -> AsyncSession:
     """Session fixture."""
     async with session_factory() as _session:
         yield _session
@@ -86,6 +89,29 @@ async def init_address(init_user, session):
             Address(user_id=user.id, city='sh', country='CN')
         ]
         session.add_all(addresses)
+
+
+API_VERSION = 'v1'
+
+
+@pytest.fixture()
+def url_builder() -> Callable[[str], str]:
+    def _builder(path: str):
+        path = path.lstrip('/')
+        return f'/api/{API_VERSION}/{path}'
+
+    return _builder
+
+
+@pytest.fixture()
+def assert_status_code_factory() -> Callable[[Response, Optional[int]], None]:
+    """Check state code is ok."""
+
+    def _factory(response: Response, code: int = 200) -> None:
+        """Check state code is ok."""
+        assert response.status_code == code
+
+    return _factory
 
 
 @pytest.fixture(autouse=True)

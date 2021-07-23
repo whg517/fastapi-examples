@@ -19,6 +19,12 @@ class Service:
     ):
         return await self.dao.get()
 
+    async def create(
+            self,
+            **kwargs
+    ):
+        return await self.dao.create(**kwargs)
+
 
 class UserService(Service):
     DAO_KLS = UserDAO
